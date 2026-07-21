@@ -227,7 +227,10 @@ class ProjectAttentionSparse(nn.Module):
         global_out = self.cross_attn_block(x, global_ctx, transformer_options=transformer_options)
         if isinstance(proj_in, tuple):
             proj_in = torch.cat([proj_in[0], proj_in[1]], dim=-1)
-        proj_out = self.proj_linear(proj_in.to(self.proj_linear.weight.dtype))
+        # Cast to the running compute dtype (global_out feats), not the stored
+        # weight dtype: under quantized/fp8/GGUF ops the weight's stored dtype is
+        # not a valid compute dtype (e.g. uint8 for GGML, float8 for fp8 ops).
+        proj_out = self.proj_linear(proj_in.to(global_out.feats.dtype))
         return global_out.replace(global_out.feats + proj_out.to(global_out.feats.dtype))
 
 
@@ -244,7 +247,10 @@ class ProjectAttentionDense(nn.Module):
         global_out = self.cross_attn_block(x, global_ctx, transformer_options=transformer_options)
         if isinstance(proj_in, tuple):
             proj_in = torch.cat([proj_in[0], proj_in[1]], dim=-1)
-        proj_out = self.proj_linear(proj_in.to(self.proj_linear.weight.dtype))
+        # Cast to the running compute dtype (global_out), not the stored weight
+        # dtype: under quantized/fp8/GGUF ops the weight's stored dtype is not a
+        # valid compute dtype (e.g. uint8 for GGML, float8 for fp8 ops).
+        proj_out = self.proj_linear(proj_in.to(global_out.dtype))
         return global_out + proj_out.to(global_out.dtype)
 
 
