@@ -5,7 +5,15 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from comfy.ldm.trellis2.model import ProjectAttentionDense, ProjectAttentionSparse
+from comfy.cli_args import args
+
+if not torch.cuda.is_available():
+    args.cpu = True
+
+from comfy.ldm.trellis2.model import (  # noqa: E402
+    ProjectAttentionDense,
+    ProjectAttentionSparse,
+)
 
 
 class _FakeQuantLinear(nn.Module):
