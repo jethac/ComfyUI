@@ -622,9 +622,10 @@ class MeshToFile3D(IO.ComfyNode):
 
     @classmethod
     def execute(cls, mesh) -> IO.NodeOutput:
-        if mesh.vertices.shape[0] > 1:
-            logging.warning("MeshToFile3D supports one item per batch only. Got %d; using first.",
-                            mesh.vertices.shape[0])
+        if mesh.vertices.shape[0] != 1:
+            raise ValueError(
+                f"MeshToFile3D supports exactly one mesh item per batch; got {mesh.vertices.shape[0]}"
+            )
         glb = mesh_item_to_glb_bytes(mesh, 0)
         if glb is None:
             raise ValueError("MeshToFile3D: mesh is empty (no vertices/faces).")
@@ -764,16 +765,23 @@ class MergeMeshes(IO.ComfyNode):
         if not meshes:
             raise ValueError("MergeMeshes: need at least one mesh")
 
+        if any(m.vertices.shape[0] != 1 for m in meshes):
+            raise ValueError("MergeMeshes accepts exactly one mesh item per input batch")
+
         any_uvs = any(m.uvs is not None for m in meshes)
         any_colors = any(m.vertex_colors is not None for m in meshes)
         color_channels = max((int(m.vertex_colors.shape[-1]) for m in meshes if m.vertex_colors is not None), default=3)
 
         verts_list, faces_list, uvs_list, colors_list = [], [], [], []
+        normals_list, tangents_list = [], []
         texture = None
+        metallic_roughness = None
+        normal_map = None
+        emissive = None
         offset = 0
         for m in meshes:
             # Coerce to CPU so CUDA-side (MoGe) meshes merge cleanly with our outputs.
-            v, f, mc, mu, _ = get_mesh_batch_item(m, 0)
+            v, f, mc, mu, mn = get_mesh_batch_item(m, 0)
             v = v.cpu()
             f = f.cpu()
             verts_list.append(v)
@@ -786,12 +794,42 @@ class MergeMeshes(IO.ComfyNode):
                 if c.shape[-1] < color_channels:
                     c = torch.cat((c, c.new_ones((c.shape[0], color_channels - c.shape[-1]))), dim=-1)
                 colors_list.append(c)
-            mt = m.texture
-            if mt is not None:
-                if texture is None:
-                    texture = mt.cpu()
-                else:
-                    logging.warning("MergeMeshes: dropping extra texture from input; only one texture is kept.")
+            if any(getattr(x, "normals", None) is not None for x in meshes):
+                if mn is None:
+                    raise ValueError("MergeMeshes cannot merge meshes with mixed normals attributes")
+                normals_list.append(mn.cpu())
+            tangents = getattr(m, "tangents", None)
+            if any(getattr(x, "tangents", None) is not None for x in meshes):
+                if tangents is None:
+                    raise ValueError("MergeMeshes cannot merge meshes with mixed tangents attributes")
+                tangents_list.append(tangents[0, :v.shape[0]].cpu())
+
+        def shared_image(name):
+            values = [getattr(m, name, None) for m in meshes]
+            present = [value is not None for value in values]
+            if any(present) and not all(present):
+                raise ValueError(f"MergeMeshes cannot merge mixed presence of {name} attributes")
+            values = [v[0].cpu() for v in values if v is not None]
+            if not values:
+                return None
+            if any(not torch.equal(values[0], v) for v in values[1:]):
+                raise ValueError(f"MergeMeshes cannot merge different {name} attributes")
+            return values[0].unsqueeze(0)
+
+        texture = shared_image("texture")
+        metallic_roughness = shared_image("metallic_roughness")
+        normal_map = shared_image("normal_map")
+        emissive = shared_image("emissive")
+
+        materials = [getattr(m, "material", None) for m in meshes]
+        if any(material != materials[0] for material in materials[1:]):
+            raise ValueError("MergeMeshes cannot merge different material attributes")
+        occlusion_values = [getattr(m, "occlusion_in_mr", False) for m in meshes]
+        if any(value != occlusion_values[0] for value in occlusion_values[1:]):
+            raise ValueError("MergeMeshes cannot merge different occlusion_in_mr attributes")
+        unlit_values = [getattr(m, "unlit", False) for m in meshes]
+        if any(value != unlit_values[0] for value in unlit_values[1:]):
+            raise ValueError("MergeMeshes cannot merge different unlit attributes")
 
         merged_verts = torch.cat(verts_list, dim=0).unsqueeze(0)
         merged_faces = torch.cat(faces_list, dim=0).unsqueeze(0)
@@ -804,6 +842,14 @@ class MergeMeshes(IO.ComfyNode):
             uvs=merged_uvs,
             vertex_colors=merged_colors,
             texture=texture,
+            metallic_roughness=metallic_roughness,
+            normals=torch.cat(normals_list, dim=0).unsqueeze(0) if normals_list else None,
+            tangents=torch.cat(tangents_list, dim=0).unsqueeze(0) if tangents_list else None,
+            normal_map=normal_map,
+            occlusion_in_mr=occlusion_values[0],
+            material=copy.deepcopy(materials[0]),
+            emissive=emissive,
+            unlit=unlit_values[0],
         ))
 
 
