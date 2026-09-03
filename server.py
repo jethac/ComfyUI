@@ -36,6 +36,7 @@ import logging
 import mimetypes
 from comfy.cli_args import args
 from comfy.deploy_environment import get_deploy_environment
+from comfy.runner_identity import get_runner_identity_async
 import comfy.utils
 import comfy.model_management
 from comfy_api import feature_flags
@@ -693,6 +694,7 @@ class PromptServer():
             installed_templates_version = FrontendManager.get_installed_templates_version()
             required_templates_version = FrontendManager.get_required_templates_version()
             comfy_package_versions = FrontendManager.get_comfy_package_versions()
+            runner_identity = await get_runner_identity_async()
 
             # Report every torch device visible to multigpu, with the primary
             # device first so existing clients that read devices[0] keep working.
@@ -730,7 +732,9 @@ class PromptServer():
                     "pytorch_version": comfy.model_management.torch_version,
                     "embedded_python": os.path.split(os.path.split(sys.executable)[0])[1] == "python_embeded",
                     "deploy_environment": get_deploy_environment(),
-                    "argv": sys.argv
+                    "argv": sys.argv,
+                    "comfyui_commit": runner_identity["commit"],
+                    "comfyui_source_state": runner_identity["source_state"],
                 },
                 "devices": device_entries
             }

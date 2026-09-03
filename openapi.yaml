@@ -1238,6 +1238,17 @@ components:
                         comfyui_version:
                             description: ComfyUI version
                             type: string
+                        comfyui_commit:
+                            description: Exact Git commit for the running ComfyUI core source, or null when unknown
+                            nullable: true
+                            type: string
+                        comfyui_source_state:
+                            description: Source state for the running ComfyUI core source
+                            enum:
+                                - clean
+                                - dirty
+                                - unknown
+                            type: string
                         deploy_environment:
                             description: How this ComfyUI instance is deployed (e.g. cloud, local-git, local-portable, local-desktop)
                             type: string
@@ -1267,6 +1278,8 @@ components:
                         - python_version
                         - embedded_python
                         - comfyui_version
+                        - comfyui_commit
+                        - comfyui_source_state
                         - pytorch_version
                         - argv
                         - ram_total
