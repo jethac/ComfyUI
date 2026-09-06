@@ -12,6 +12,9 @@ class VOXEL:
         self.voxel_colors = voxel_colors
         self.resolution = resolution # each 3d model has its own resolution
 
+    def _comfy_cache_tensors(self):
+        return self.data, self.voxel_colors
+
 class SPLAT:
     """A batch of 3D Gaussian splats in render-ready (activated, world-space) form.
 
@@ -29,6 +32,9 @@ class SPLAT:
         self.sh = sh                  # (B, N, K, 3) spherical-harmonic color coefficients
         self.counts = counts          # (B,) real lengths, or None
 
+    def _comfy_cache_tensors(self):
+        return self.positions, self.scales, self.rotations, self.opacities, self.sh, self.counts
+
 
 class MESH:
     def __init__(self, vertices: torch.Tensor, faces: torch.Tensor,
@@ -44,7 +50,8 @@ class MESH:
                  normal_map: torch.Tensor | None = None,
                  occlusion_in_mr: bool = False,
                  material: dict | None = None,
-                 emissive: torch.Tensor | None = None):
+                 emissive: torch.Tensor | None = None,
+                 texture_mr: torch.Tensor | None = None):
 
         assert (vertex_counts is None) == (face_counts is None), \
             "vertex_counts and face_counts must be provided together (both or neither)"
@@ -57,7 +64,8 @@ class MESH:
         self.normals = normals
         self.texture = texture              # texture (baseColor): (B, H, W, 3)
         # glTF metallicRoughness texture: (B, H, W, 3), R unused, G=roughness, B=metallic
-        self.metallic_roughness = metallic_roughness
+        self.metallic_roughness = metallic_roughness if metallic_roughness is not None else texture_mr
+        self.texture_mr = self.metallic_roughness
         # When vertices/faces are zero-padded to a common N/M across the batch (variable-size mesh batch),
         # these hold the real per-item lengths (B,). None means rows are uniform and no slicing is needed.
         self.vertex_counts = vertex_counts
@@ -71,6 +79,23 @@ class MESH:
         self.occlusion_in_mr = occlusion_in_mr  # True = R channel of metallic_roughness holds AO (ORM)
         self.material = material             # SetMeshMaterial scalar/factor overrides
         self.emissive = emissive             # emissive map: (B, H, W, 3)
+
+    def _comfy_cache_tensors(self):
+        return (
+            self.vertices,
+            self.faces,
+            self.uvs,
+            self.vertex_colors,
+            self.texture,
+            self.metallic_roughness,
+            self.vertex_counts,
+            self.face_counts,
+            self.normals,
+            self.tangents,
+            self.normal_map,
+            self.material,
+            self.emissive,
+        )
 
 
 class File3D:
