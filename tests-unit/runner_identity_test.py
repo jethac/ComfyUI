@@ -2,6 +2,7 @@ import asyncio
 import threading
 import sys
 import time
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -130,7 +131,7 @@ def test_real_helper_terminates_and_bounds_large_child_output(tmp_path):
     monkeypatch.setattr(runner_identity, "_GIT_EXECUTABLE", sys.executable)
     start = time.monotonic()
     try:
-        output = runner_identity._run_git_bounded([str(script)], Path.cwd(), start + 2)
+        output = runner_identity._run_git_bounded(['-S', str(script)], Path.cwd(), start + 2)
     finally:
         monkeypatch.undo()
 
@@ -149,7 +150,7 @@ def test_real_helper_terminates_silent_hanging_child(tmp_path):
     start = time.monotonic()
     try:
         output = runner_identity._run_git_bounded(
-            [str(script)], Path.cwd(), start + 0.2
+            ['-S', str(script)], Path.cwd(), start + 0.2
         )
     finally:
         monkeypatch.undo()
@@ -159,6 +160,45 @@ def test_real_helper_terminates_silent_hanging_child(tmp_path):
     assert not any(
         thread.name == "comfy-git-reader" for thread in threading.enumerate()
     )
+
+
+@pytest.mark.parametrize('timeouts', [1, 2])
+def test_process_wait_timeout_fails_closed_and_reaps_child(monkeypatch, tmp_path, timeouts):
+    script = tmp_path / 'identity.py'
+    script.write_text("print('identity')", encoding='utf-8')
+    original_popen = subprocess.Popen
+    processes = []
+    original_job = runner_identity._WindowsJob
+    closed_jobs = []
+    class Job(original_job):
+        def close(self):
+            closed_jobs.append(self)
+            super().close()
+    def spawn(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        if args[0][0] == sys.executable:
+            original_wait = process.wait
+            calls = 0
+            def wait(*wait_args, **wait_kwargs):
+                nonlocal calls
+                calls += 1
+                if calls <= timeouts:
+                    raise subprocess.TimeoutExpired(process.args, wait_kwargs.get('timeout'))
+                return original_wait(*wait_args, **wait_kwargs)
+            process.wait = wait
+            processes.append(process)
+        return process
+    monkeypatch.setattr(subprocess, 'Popen', spawn)
+    monkeypatch.setattr(runner_identity, '_WindowsJob', Job)
+    monkeypatch.setattr(runner_identity, '_GIT_EXECUTABLE', sys.executable)
+    result = runner_identity._run_git_bounded(['-S', str(script)], tmp_path, time.monotonic() + 2)
+    assert result is None
+    assert closed_jobs and all(process.stdout.closed for process in processes)
+    # Native Windows job termination completes asynchronously after handle close.
+    for process in processes:
+        process.wait(timeout=0.5)
+    assert processes and all(process.poll() is not None for process in processes)
+    assert not any(thread.name == 'comfy-git-reader' for thread in threading.enumerate())
 
 
 def test_reader_must_reach_eof_after_process_exit(tmp_path):
@@ -172,7 +212,7 @@ def test_reader_must_reach_eof_after_process_exit(tmp_path):
     monkeypatch.setattr(runner_identity, "_GIT_EXECUTABLE", sys.executable)
     try:
         output = runner_identity._run_git_bounded(
-            [str(script)], Path.cwd(), time.monotonic() + 2
+            ['-S', str(script)], Path.cwd(), time.monotonic() + 2
         )
     finally:
         monkeypatch.undo()
@@ -186,7 +226,7 @@ def test_process_tree_cleanup_after_parent_exit(tmp_path):
     child.write_text("import time; time.sleep(30)", encoding="utf-8")
     parent = tmp_path / "parent.py"
     parent.write_text(
-        f"import subprocess,sys; subprocess.Popen([sys.executable, r'{child}']); sys.exit(0)",
+        f"import subprocess,sys; subprocess.Popen([sys.executable, '-S', r'{child}']); sys.exit(0)",
         encoding="utf-8",
     )
     monkeypatch = pytest.MonkeyPatch()
@@ -194,7 +234,7 @@ def test_process_tree_cleanup_after_parent_exit(tmp_path):
     start = time.monotonic()
     try:
         output = runner_identity._run_git_bounded(
-            [str(parent)], Path.cwd(), start + 0.3
+            ['-S', str(parent)], Path.cwd(), start + 0.3
         )
     finally:
         monkeypatch.undo()

@@ -172,19 +172,28 @@ def _run_git_bounded(arguments: list[str], root: Path, deadline: float) -> bytes
             if len(output) > _MAX_OUTPUT:
                 break
         if terminal != "eof" or process.poll() is None:
-            _terminate_process_tree(process)
+            if os.name == "nt":
+                process_job.close()
+            else:
+                _terminate_process_tree(process)
         process.wait(timeout=max(0.01, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        return None
     finally:
         stop_reader.set()
-        _terminate_process_tree(process)
+        if os.name == "nt":
+            process_job.close()
+        else:
+            _terminate_process_tree(process)
         try:
             process.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
             return None
-        process_job.close()
-        if process.stdout is not None:
-            process.stdout.close()
-        reader.join(timeout=0.5)
+        finally:
+            process_job.close()
+            if process.stdout is not None:
+                process.stdout.close()
+            reader.join(timeout=0.5)
         if reader.is_alive():
             return None
     if terminal != "eof" or process.returncode != 0 or len(output) > _MAX_OUTPUT:
